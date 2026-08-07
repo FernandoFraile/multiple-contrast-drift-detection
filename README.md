@@ -10,7 +10,7 @@ The repository includes:
 - a visual dataset-generation notebook;
 - the official `MCDD` detector implementation;
 - Traditional Single Hypothesis, KSWIN, and LORD-LD baselines;
-- a notebook for focused and complete experiment execution;
+- command-line and notebook workflows for complete experiment execution;
 - lightweight automated software tests.
 
 SEED is not included in the current experiment implementation.
@@ -32,7 +32,8 @@ SEED is not included in the current experiment implementation.
 ├── results/
 │   └── README.md              # generated CSV files are not versioned yet
 ├── scripts/
-│   └── generate_datasets.py
+│   ├── generate_datasets.py
+│   └── run_experiments.py
 ├── src/
 │   └── mcdd/
 │       ├── datasets/
@@ -210,6 +211,50 @@ IR  = TP / (TP + FP)
 
 Mean delay is calculated only from valid detections.
 
+## Run the experiments from the terminal
+
+After generating the nine HDF5 files, the complete benchmark can be executed from the repository root with:
+
+```bash
+python scripts/run_experiments.py
+```
+
+This evaluates all 10 detector configurations on all 9,000 streams, corresponding to 90,000 detector-stream runs, and writes:
+
+```text
+results/
+├── per_run_results.csv
+└── summary_results.csv
+```
+
+The complete execution may require substantial time.
+
+Before launching the full benchmark, a reduced validation can be performed with, for example, two streams from each archive:
+
+```bash
+python scripts/run_experiments.py --max-streams 2
+```
+
+If `per_run_results.csv` already exists, the script protects it by default. To explicitly replace existing results, use:
+
+```bash
+python scripts/run_experiments.py --overwrite
+```
+
+The progress reporting frequency can also be changed:
+
+```bash
+python scripts/run_experiments.py --progress-every 100
+```
+
+Use `--help` to display all command-line options:
+
+```bash
+python scripts/run_experiments.py --help
+```
+
+The command-line runner is the recommended reproducible workflow for the complete paper experiment. The notebook remains available for interactive inspection and focused executions.
+
 ## Run one detector on one dataset
 
 Open:
@@ -232,22 +277,20 @@ With `SELECTED_MAX_STREAMS = None`, all 1,000 streams in the selected archive ar
 
 Focused outputs are written under `results/selected/`.
 
-## Run the complete experiments
+## Notebook-based complete execution
 
-Open `notebooks/run_experiments.ipynb`, select the `MCDD` Conda environment, run the setup and validation cells, and then set:
+The complete benchmark can also be run interactively from `notebooks/run_experiments.ipynb`. Select the `MCDD` Conda environment, run the setup and validation cells, and then set:
 
 ```python
 RUN_FULL_EXPERIMENTS = True
 MAX_STREAMS_PER_ARCHIVE = None
 ```
 
-The complete experiment evaluates 9,000 streams with 10 configurations, for a total of 90,000 detector-stream runs. It may require substantial execution time.
-
 The notebook does not include SEED and does not include the former *Comparison: Sliding vs Growing Window* section.
 
 ## Results
 
-The experiment notebook generates:
+The experiment workflows generate:
 
 ```text
 results/
