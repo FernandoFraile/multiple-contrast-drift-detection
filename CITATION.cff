@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the associated article and this repository."
+title: "Multiple Contrast Drift Detection (MCDD)"
+type: software
+authors:
+  - family-names: Fraile Mulas
+    given-names: Fernando
+  - family-names: Mera
+    given-names: David
+  - family-names: Crujeiras
+    given-names: Rosa M.
+repository-code: "https://github.com/FernandoFraile/multiple-contrast-drift-detection"
+license: BSD-3-Clause
+preferred-citation:
+  type: article
+  title: "Multiple Contrast Drift Detection: False Discovery Rate Control for Concept Drift in Data Streams"
+  authors:
+    - family-names: Fraile Mulas
+      given-names: Fernando
+    - family-names: Mera
+      given-names: David
+    - family-names: Crujeiras
+      given-names: Rosa M.
+  year: 2026
