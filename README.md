@@ -204,9 +204,9 @@ IR  = TP / (TP + FP)
 
 Mean Delay is calculated only from valid detections.
 
-## Run the complete experiments from the terminal
+## Run experiments from the terminal
 
-After generating the nine HDF5 files, run:
+After generating the HDF5 files, the complete benchmark can still be run with:
 
 ```bash
 python scripts/run_experiments.py
@@ -220,17 +220,99 @@ results/
 └── summary_results.csv
 ```
 
-For a reduced validation using two streams from each archive:
+### Recommended partial execution by drift type
+
+The benchmark can also be run in separate sessions. This is useful for long experiments because each drift type can be validated before moving to the next one.
+
+Run abrupt drift first:
 
 ```bash
-python scripts/run_experiments.py --max-streams 2
+python scripts/run_experiments.py --drift abrupt
 ```
 
-To replace existing results explicitly:
+This evaluates the three abrupt archives with all ten detector configurations, producing 30,000 detector-stream runs when all 1,000 streams are used.
+
+After validating the abrupt results, append gradual drift to the same master CSV files:
 
 ```bash
-python scripts/run_experiments.py --overwrite
+python scripts/run_experiments.py --drift gradual --append
 ```
+
+Then append incremental drift:
+
+```bash
+python scripts/run_experiments.py --drift incremental --append
+```
+
+After the final command, `per_run_results.csv` contains all 90,000 runs and `summary_results.csv` is regenerated from the complete accumulated result set.
+
+The `--append` mode checks the run key (`configuration`, `drift_type`, `distribution`, `row_index`) and refuses to add duplicate runs. This prevents accidentally executing the same block twice.
+
+### Reduced validation before a full block
+
+For example, test abrupt drift using only two streams from each distribution:
+
+```bash
+python scripts/run_experiments.py --drift abrupt --max-streams 2
+```
+
+If that reduced validation produced `results/per_run_results.csv`, replace it before the definitive abrupt run with:
+
+```bash
+python scripts/run_experiments.py --drift abrupt --overwrite
+```
+
+Then continue with gradual and incremental using `--append`.
+
+### More specific filters
+
+A single distribution can be selected:
+
+```bash
+python scripts/run_experiments.py --drift abrupt --distribution normal
+```
+
+A single detector configuration can also be selected:
+
+```bash
+python scripts/run_experiments.py --drift abrupt --configuration MCDD-S
+```
+
+Filters can be combined:
+
+```bash
+python scripts/run_experiments.py \
+    --drift abrupt \
+    --distribution normal \
+    --configuration MCDD-S
+```
+
+The same option can be repeated to select multiple values, for example:
+
+```bash
+python scripts/run_experiments.py \
+    --drift abrupt \
+    --drift gradual \
+    --configuration MCDD-S \
+    --configuration MCDD-G20k
+```
+
+Available configuration names are:
+
+```text
+MCDD-S
+MCDD-G20k
+MCDD-G30k
+MCDD-G20kT
+MCDD-G30kT
+TSH-S
+TSH-G20k
+TSH-G30k
+KSWIN
+LORD-LD
+```
+
+To replace the existing master result file explicitly, use `--overwrite`. To add a new non-overlapping selection, use `--append`. Without either option, an existing `per_run_results.csv` is protected from replacement.
 
 Use:
 
