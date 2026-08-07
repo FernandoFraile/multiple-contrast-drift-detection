@@ -1,0 +1,27 @@
+# Generated benchmark datasets
+data/datasets/*.h5
+data/test/
+*.h5.part
+
+# Generated experiment results (not versioned yet)
+results/**/*.csv
+results/*.csv
+
+# Python caches and test artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
