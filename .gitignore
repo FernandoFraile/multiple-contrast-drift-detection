@@ -5,6 +5,7 @@ data/test/
 
 # Generated experiment results (not versioned yet)
 results/**/*.csv
+results/**/*.part
 results/*.csv
 
 # Python caches and test artifacts
