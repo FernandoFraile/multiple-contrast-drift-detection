@@ -11,6 +11,7 @@ from mcdd.experiments import (
     article_table_for_drift,
     average_metrics_by_drift,
     average_metrics_overall,
+    build_article_tables,
     format_article_table,
     overall_article_table,
 )
@@ -150,3 +151,66 @@ def test_kswin_article_na_convention_is_preserved(tmp_path: Path) -> None:
     assert formatted_kswin["MDR"] == "NA"
     assert formatted_kswin["IR"] == "NA"
     assert formatted_kswin["Mean Delay"] == "NA"
+
+
+def test_partial_abrupt_results_can_be_reported(tmp_path: Path) -> None:
+    full_summary = tmp_path / "full_summary.csv"
+    partial_summary = tmp_path / "summary_results.csv"
+    _write_summary(full_summary)
+
+    results = pd.read_csv(full_summary)
+    abrupt_only = results[
+        (results["drift_type"] == "abrupt")
+        | (results["drift_type"] == "all")
+    ]
+    abrupt_only.to_csv(partial_summary, index=False)
+
+    tables = build_article_tables(
+        partial_summary,
+        require_all_distributions=False,
+        require_all_drifts=False,
+    )
+
+    assert not tables["abrupt"].empty
+    assert tables["gradual"].empty
+    assert tables["incremental"].empty
+    assert not tables["overall"].empty
+
+    abrupt_mcdd = tables["abrupt"].loc[
+        tables["abrupt"]["Config"] == "MCDD-S"
+    ].iloc[0]
+    overall_mcdd = tables["overall"].loc[
+        tables["overall"]["Config"] == "MCDD-S"
+    ].iloc[0]
+
+    # With only abrupt available, the provisional overall value is identical
+    # to the abrupt value rather than raising an error.
+    assert np.isclose(overall_mcdd["FDR"], abrupt_mcdd["FDR"])
+    assert np.isclose(overall_mcdd["MDR"], abrupt_mcdd["MDR"])
+    assert np.isclose(overall_mcdd["IR"], abrupt_mcdd["IR"])
+    assert np.isclose(overall_mcdd["Mean Delay"], abrupt_mcdd["Mean Delay"])
+
+
+def test_partial_distribution_results_can_be_reported(tmp_path: Path) -> None:
+    full_summary = tmp_path / "full_summary.csv"
+    partial_summary = tmp_path / "summary_results.csv"
+    _write_summary(full_summary)
+
+    results = pd.read_csv(full_summary)
+    partial = results[
+        (results["drift_type"] == "abrupt")
+        & (results["distribution"] == "normal")
+    ]
+    partial.to_csv(partial_summary, index=False)
+
+    by_drift = average_metrics_by_drift(
+        partial_summary,
+        require_all_distributions=False,
+    )
+    abrupt = article_table_for_drift(by_drift, "abrupt")
+    mcdd = abrupt.loc[abrupt["Config"] == "MCDD-S"].iloc[0]
+
+    assert np.isclose(mcdd["FDR"], 0.10)
+    assert np.isclose(mcdd["MDR"], 0.30)
+    assert np.isclose(mcdd["IR"], 0.90)
+    assert np.isclose(mcdd["Mean Delay"], 100.0)
