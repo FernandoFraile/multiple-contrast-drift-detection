@@ -1,16 +1,16 @@
 # Multiple Contrast Drift Detection (MCDD)
 
-This repository contains the synthetic data generators, detector implementation, and experiment workflow used to evaluate **Multiple Contrast Drift Detection (MCDD)**.
+This repository contains the synthetic data generators, detector implementation, experiment workflow, and reporting utilities used to evaluate **Multiple Contrast Drift Detection (MCDD)**.
 
 The repository includes:
 
 - generators for abrupt, gradual, and incremental concept drift;
 - normal, exponential, and gamma data streams;
 - reproducible HDF5 generation for the complete 9,000-stream benchmark;
-- a visual dataset-generation notebook;
 - the official `MCDD` detector implementation;
 - Traditional Single Hypothesis, KSWIN, and LORD-LD baselines;
-- command-line and notebook workflows for complete experiment execution;
+- command-line and notebook workflows for complete and focused experiments;
+- article-style result aggregation and LaTeX output;
 - lightweight automated software tests.
 
 SEED is not included in the current experiment implementation.
@@ -33,7 +33,8 @@ SEED is not included in the current experiment implementation.
 │   └── README.md              # generated CSV files are not versioned yet
 ├── scripts/
 │   ├── generate_datasets.py
-│   └── run_experiments.py
+│   ├── run_experiments.py
+│   └── show_results.py
 ├── src/
 │   └── mcdd/
 │       ├── datasets/
@@ -42,24 +43,26 @@ SEED is not included in the current experiment implementation.
 │       │   ├── mcdd.py
 │       │   └── lord.py
 │       └── experiments/
-│           └── evaluation.py
+│           ├── evaluation.py
+│           └── reporting.py
 └── tests/
     ├── conftest.py
     ├── test_generators.py
     ├── test_mcdd.py
-    └── test_evaluation.py
+    ├── test_evaluation.py
+    └── test_reporting.py
 ```
 
 ## Environment
 
-The supplied `environment.yml` reproduces the Conda environment used for the experiments:
+Create the Conda environment used for the experiments with:
 
 ```bash
 conda env create -f environment.yml
 conda activate MCDD
 ```
 
-The environment was exported from a Windows x86-64 setup, so it contains some platform-specific Conda packages. The machine-specific Conda prefix was removed. `h5py` is included for the benchmark archives and `pytest` for the automated tests.
+The supplied environment was exported from a Windows x86-64 setup and therefore contains some platform-specific Conda packages. The machine-specific prefix was removed. `h5py` is included for the benchmark archives and `pytest` for the automated tests.
 
 ## Synthetic benchmark
 
@@ -74,13 +77,13 @@ The complete benchmark contains:
 - transition lengths selected from 1,000, 2,000, or 3,000 observations for gradual and incremental drift;
 - seeds 42 through 1041 for the 1,000 replications of each scenario.
 
-Gradual and incremental transitions are generated from the selected distribution. In particular, exponential and gamma transition intervals are not generated from a normal distribution.
+Gradual and incremental transitions are generated from the selected distribution. Exponential and gamma transition intervals are therefore not generated from a normal distribution.
 
-### Why the HDF5 files are not stored in GitHub
+### Generate the HDF5 files
 
-The complete `.h5` benchmark files are intentionally **not included in the repository because of their size**. They can be reproduced from the fixed generation code and random seeds provided here.
+The complete `.h5` benchmark files are intentionally not stored in GitHub because of their size. They can be reproduced from the fixed generation code and seeds provided here.
 
-Generate all nine archives from the repository root with:
+From the repository root:
 
 ```bash
 python scripts/generate_datasets.py
@@ -103,7 +106,7 @@ data/datasets/
 
 Each archive stores 1,000 streams in `values`, with shape `(1000, 70000)`, together with seeds, drift limits, transition lengths, and distribution parameters.
 
-A reduced generation check is available through:
+A reduced generation check can be run with:
 
 ```bash
 python scripts/generate_datasets.py --replications 2 --output-dir data/test
@@ -119,13 +122,7 @@ Open:
 notebooks/dataset_generation_demo.ipynb
 ```
 
-Select the `MCDD` Conda environment as the kernel and run all cells. The notebook generates and validates one example for every drift/distribution combination and uses the publication-oriented plotting helper from the original experimentation workflow.
-
-Figures are written to:
-
-```text
-notebooks/figures/dataset_generation/
-```
+Select the `MCDD` Conda environment and run all cells. The notebook generates and validates one example for every drift/distribution combination.
 
 ## MCDD implementation
 
@@ -158,17 +155,15 @@ Supported window modes are:
 - `growing_dynamic`: growing window with a fixed number of subwindows;
 - `growing_fixed`: growing window with a fixed subwindow size and an increasing number of contrasts.
 
-For `growing_fixed`, only complete subwindows are evaluated. When the maximum window size is not divisible by the subwindow size, the **most recent** complete portion is retained. For example, the 20,000-sample configuration uses the most recent 19,800 observations with 600-sample subwindows.
+For `growing_fixed`, only complete subwindows are evaluated. When the maximum window size is not divisible by the subwindow size, the most recent complete portion is retained. For example, the 20,000-sample configuration uses the most recent 19,800 observations with 600-sample subwindows.
 
-### Latched alarm state
-
-MCDD keeps `drift_detected=True` after its first alarm. Later calls to `update` do not automatically return the detector to the non-drift state. Call:
+MCDD uses a latched alarm state: after the first alarm, `drift_detected` remains `True` until:
 
 ```python
 detector.reset()
 ```
 
-before using the same instance to detect another drift. `reset()` clears the window, history, and latched alarm state.
+is called.
 
 ## Experiment configurations
 
@@ -189,13 +184,11 @@ The experiment workflow evaluates ten configurations:
 
 All configurations use `alpha=0.01`. MCDD uses the Benjamini--Yekutieli correction by default.
 
-Only the locally dependent LORD procedure required by the experiment is kept. The unused asynchronous and classic implementations are not included.
-
 ## Experiment scoring
 
-The evaluation preserves the convention used in the original experiments:
+The evaluation preserves the original experiment convention:
 
-- valid detections use strict comparisons: `drift_start < detection < valid_detection_end`;
+- valid detections use the strict condition `drift_start < detection < valid_detection_end`;
 - abrupt drift has a 2,000-observation valid detection interval;
 - gradual and incremental drift use their generated transition interval;
 - when the first alarm is outside the valid interval, it is counted as a false alarm and the drift is not additionally counted as missed;
@@ -209,17 +202,17 @@ MDR = FN / (TP + FN)
 IR  = TP / (TP + FP)
 ```
 
-Mean delay is calculated only from valid detections.
+Mean Delay is calculated only from valid detections.
 
-## Run the experiments from the terminal
+## Run the complete experiments from the terminal
 
-After generating the nine HDF5 files, the complete benchmark can be executed from the repository root with:
+After generating the nine HDF5 files, run:
 
 ```bash
 python scripts/run_experiments.py
 ```
 
-This evaluates all 10 detector configurations on all 9,000 streams, corresponding to 90,000 detector-stream runs, and writes:
+This evaluates all 10 detector configurations on all 9,000 streams, corresponding to 90,000 detector-stream runs, and generates:
 
 ```text
 results/
@@ -227,100 +220,129 @@ results/
 └── summary_results.csv
 ```
 
-The complete execution may require substantial time.
-
-Before launching the full benchmark, a reduced validation can be performed with, for example, two streams from each archive:
+For a reduced validation using two streams from each archive:
 
 ```bash
 python scripts/run_experiments.py --max-streams 2
 ```
 
-If `per_run_results.csv` already exists, the script protects it by default. To explicitly replace existing results, use:
+To replace existing results explicitly:
 
 ```bash
 python scripts/run_experiments.py --overwrite
 ```
 
-The progress reporting frequency can also be changed:
-
-```bash
-python scripts/run_experiments.py --progress-every 100
-```
-
-Use `--help` to display all command-line options:
+Use:
 
 ```bash
 python scripts/run_experiments.py --help
 ```
 
-The command-line runner is the recommended reproducible workflow for the complete paper experiment. The notebook remains available for interactive inspection and focused executions.
+for all options.
 
-## Run one detector on one dataset
+## Notebook experiment workflow
 
-Open:
+The same workflow is available interactively in:
 
 ```text
 notebooks/run_experiments.ipynb
 ```
 
-In **Run one detector on one dataset archive**, configure for example:
+The notebook includes:
 
-```python
-RUN_SELECTED_EXPERIMENT = True
-SELECTED_DATASET = "abrupt_normal.h5"
-SELECTED_CONFIGURATION = "MCDD-S"
-SELECTED_MAX_STREAMS = None
-OVERWRITE_SELECTED_RESULTS = False
-```
+- dataset validation;
+- a quick one-stream check;
+- execution of one detector on one selected dataset;
+- complete 90,000-run execution;
+- inspection of generated CSV files;
+- article-style result tables;
+- optional LaTeX table generation.
 
-With `SELECTED_MAX_STREAMS = None`, all 1,000 streams in the selected archive are evaluated with that detector configuration. A small validation can be performed first by setting `SELECTED_MAX_STREAMS = 2`.
-
-Focused outputs are written under `results/selected/`.
-
-## Notebook-based complete execution
-
-The complete benchmark can also be run interactively from `notebooks/run_experiments.ipynb`. Select the `MCDD` Conda environment, run the setup and validation cells, and then set:
+For the complete benchmark set:
 
 ```python
 RUN_FULL_EXPERIMENTS = True
 MAX_STREAMS_PER_ARCHIVE = None
 ```
 
-The notebook does not include SEED and does not include the former *Comparison: Sliding vs Growing Window* section.
+## Article-style result tables
 
-## Results
+The article tables are generated from the distribution-specific rows in `results/summary_results.csv`.
 
-The experiment workflows generate:
+For every detector and drift type, the reporting layer computes the arithmetic mean of FDR, MDR, IR, and Mean Delay across:
 
 ```text
-results/
-├── per_run_results.csv
-└── summary_results.csv
+normal
+exponential
+gamma
 ```
 
-At the current stage of the project, **generated CSV result files are intentionally not committed to the repository**. They are excluded through `.gitignore` and can be reproduced with the supplied workflow.
+The `distribution="all"` pooled rows created by `summarize_results` are deliberately ignored for this step.
 
-`per_run_results.csv` contains one row for every stream/configuration pair. `summary_results.csv` contains the corresponding counts and metrics. The final article-level averaging across distributions is performed separately and is not part of this repository.
+The overall comparison is then obtained by averaging the three drift-level values:
+
+```text
+abrupt
+gradual
+incremental
+```
+
+For scenarios in which a detector produces only false alarms and no valid drift detections, the article-style `NA` convention is applied to metrics that are not meaningful.
+
+### Display the article tables from the terminal
+
+After `summary_results.csv` has been generated:
+
+```bash
+python scripts/show_results.py
+```
+
+This prints, with four decimal places:
+
+```text
+Abrupt drift
+Gradual drift
+Incremental drift
+Overall comparison
+```
+
+To print LaTeX versions:
+
+```bash
+python scripts/show_results.py --latex
+```
+
+Other options include:
+
+```bash
+python scripts/show_results.py --decimals 4
+python scripts/show_results.py --summary-file path/to/summary_results.csv
+python scripts/show_results.py --help
+```
+
+The underlying functions are implemented in `src/mcdd/experiments/reporting.py` and are also used directly by the experiment notebook.
+
+## Results and version control
+
+Generated result CSV files are intentionally not committed to the repository at this stage. They are excluded through `.gitignore` and can be reproduced with the supplied workflows.
 
 See `results/README.md` for details.
 
 ## Automated tests
 
-The `tests/` directory contains lightweight software checks. They do not reproduce the scientific benchmark; they verify that core implementation behavior remains stable after code changes.
-
-Run the complete test suite from the repository root with:
+Run the complete software test suite with:
 
 ```bash
 python -m pytest -q
 ```
 
-The tests cover deterministic generation, drift metadata, non-negative support for exponential and gamma data, MCDD alarm/reset behavior, `growing_fixed` window handling, strict detection scoring, HDF5 reading, and CSV generation.
+The tests cover deterministic generation, drift metadata, non-negative support for exponential and gamma data, MCDD alarm/reset behavior, `growing_fixed` window handling, strict detection scoring, HDF5 reading, CSV generation, and article-style result aggregation.
 
 ## Citation
 
 Citation metadata are provided in `CITATION.cff`. GitHub can use this file to expose a **Cite this repository** entry.
 
-The preferred article citation is:
+Preferred article citation:
 
 > Fernando Fraile Mulas, David Mera, and Rosa M. Crujeiras. *Multiple Contrast Drift Detection: False Discovery Rate Control for Concept Drift in Data Streams*. 2026.
 
