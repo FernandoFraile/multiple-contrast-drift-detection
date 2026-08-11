@@ -4,7 +4,7 @@
 The runner supports both the complete 90,000-run benchmark and partial
 executions filtered by drift type, distribution, or detector configuration.
 Partial executions can be appended safely to the same master result file or
-used to replace only matching previously computed runs.
+used to replace only a selected experiment block.
 """
 
 from __future__ import annotations
@@ -39,6 +39,11 @@ RESULT_KEY_COLUMNS = (
     "drift_type",
     "distribution",
     "row_index",
+)
+SELECTION_COLUMNS = (
+    "configuration",
+    "drift_type",
+    "distribution",
 )
 REQUIRED_SCORING_COLUMNS = {"outcome", "late_delay", "TP", "FP", "FN"}
 VALID_OUTCOMES = {"detected", "false_alarm", "late_detection", "missed"}
@@ -137,9 +142,8 @@ def parse_arguments() -> argparse.Namespace:
         dest="replace_selection",
         action="store_true",
         help=(
-            "Replace only existing runs whose configuration, drift type, "
-            "distribution, and row index match the current selection. All "
-            "other existing results are preserved."
+            "Replace the complete existing block selected by configuration, "
+            "drift type, and distribution, while preserving all other results."
         ),
     )
     parser.add_argument(
@@ -272,11 +276,11 @@ def _validate_existing_scoring_results(existing: pd.DataFrame) -> None:
         )
 
 
-def _replace_matching_runs(
+def _replace_selected_blocks(
     existing: pd.DataFrame,
     new_results: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Replace only existing rows sharing the exact per-run result key."""
+    """Replace complete configuration/drift/distribution blocks."""
     duplicate_new = new_results.duplicated(
         subset=list(RESULT_KEY_COLUMNS),
         keep=False,
@@ -287,13 +291,13 @@ def _replace_matching_runs(
             "used for selective replacement."
         )
 
-    existing_keys = pd.MultiIndex.from_frame(
-        existing.loc[:, RESULT_KEY_COLUMNS]
+    existing_blocks = pd.MultiIndex.from_frame(
+        existing.loc[:, SELECTION_COLUMNS]
     )
-    replacement_keys = pd.MultiIndex.from_frame(
-        new_results.loc[:, RESULT_KEY_COLUMNS]
+    replacement_blocks = pd.MultiIndex.from_frame(
+        new_results.loc[:, SELECTION_COLUMNS].drop_duplicates()
     )
-    preserved = existing.loc[~existing_keys.isin(replacement_keys)].copy()
+    preserved = existing.loc[~existing_blocks.isin(replacement_blocks)].copy()
     return pd.concat([preserved, new_results], ignore_index=True)
 
 
@@ -332,13 +336,14 @@ def _merge_partial_results(
                     examples = duplicates.head(5).to_string(index=False)
                     raise ValueError(
                         f"Refusing to append {len(duplicates)} duplicate runs. "
-                        "Use --replace-selection to recompute only those runs, "
-                        "or --overwrite to replace the whole master file. "
+                        "Use --replace-selection to recompute the selected "
+                        "experiment block, or --overwrite to replace the "
+                        "whole master file. "
                         f"Example duplicates:\n{examples}"
                     )
                 combined = pd.concat([existing, new_results], ignore_index=True)
             else:
-                combined = _replace_matching_runs(existing, new_results)
+                combined = _replace_selected_blocks(existing, new_results)
         else:
             combined = new_results
 
@@ -348,8 +353,8 @@ def _merge_partial_results(
     if per_run_file.exists() and not overwrite:
         raise FileExistsError(
             f"{per_run_file} already exists. Use --append to add new runs, "
-            "--replace-selection to recompute matching runs, or --overwrite "
-            "to replace the whole master file."
+            "--replace-selection to recompute a selected block, or "
+            "--overwrite to replace the whole master file."
         )
 
     _write_results_atomically(new_results, per_run_file)
