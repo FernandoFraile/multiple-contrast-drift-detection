@@ -1,18 +1,9 @@
 """Article-style result reporting for the MCDD experiments.
 
-The paper reports, for each detector configuration, the arithmetic mean of the
-metrics obtained for the normal, exponential, and gamma distributions within
-each drift type. The overall table is then obtained by taking the arithmetic
-mean of the three drift-level values.
-
-This module reproduces that presentation step from ``summary_results.csv``.
-It deliberately uses only the distribution-specific rows and ignores the
-``distribution="all"`` pooled rows produced by :func:`summarize_results`.
-
-For interactive inspection, the functions can also work with partial experiment
-results. In that mode, means are calculated from the distributions and drift
-types currently available and should be interpreted as provisional rather than
-as the final article values.
+For each detector configuration and drift type, the reported table uses the
+arithmetic mean of the distribution-specific metrics for normal, exponential,
+and gamma streams. The overall table then averages the drift-level values.
+Pooled ``distribution="all"`` rows are not used for these tables.
 """
 
 from __future__ import annotations
@@ -86,8 +77,7 @@ def _load_distribution_rows(
 
     if exact.empty:
         raise ValueError(
-            "No distribution-specific drift rows were found in the summary "
-            "file."
+            "No distribution-specific drift rows were found in the summary file."
         )
 
     duplicate_mask = exact.duplicated(
@@ -130,10 +120,9 @@ def average_metrics_by_drift(
 ) -> pd.DataFrame:
     """Average distribution-specific metrics within each available drift type.
 
-    By default, the arithmetic mean requires normal, exponential, and gamma for
-    every detector/drift pair, matching the final article calculation. Set
-    ``require_all_distributions=False`` to inspect partial executions; in that
-    case the mean uses only the distributions currently present.
+    With ``article_na=True``, an undefined metric in any included distribution
+    remains undefined in the drift-level table rather than being omitted from
+    the arithmetic mean.
     """
     exact = _load_distribution_rows(
         summary_file,
@@ -169,28 +158,21 @@ def average_metrics_by_drift(
         }
 
         for metric in ARTICLE_METRICS:
-            row[metric] = float(group[metric].mean())
-
-        if article_na and true_positives == 0:
-            row["mean_delay"] = np.nan
-
-            # This matches the convention used in the article when a detector
-            # produces only false alarms for the evaluated drift scenario.
-            if false_positives > 0 and false_negatives == 0:
-                row["MDR"] = np.nan
-                row["IR"] = np.nan
+            values = pd.to_numeric(group[metric], errors="coerce")
+            if article_na and values.isna().any():
+                row[metric] = np.nan
+            else:
+                row[metric] = float(values.mean())
 
         rows.append(row)
 
     averaged = pd.DataFrame(rows)
 
     configuration_rank = {
-        name: index
-        for index, name in enumerate(_configuration_order())
+        name: index for index, name in enumerate(_configuration_order())
     }
     drift_rank = {
-        name: index
-        for index, name in enumerate(DRIFT_TYPES)
+        name: index for index, name in enumerate(DRIFT_TYPES)
     }
 
     averaged["_configuration_order"] = averaged["configuration"].map(
@@ -213,13 +195,7 @@ def average_metrics_overall(
     *,
     require_all_drifts: bool = True,
 ) -> pd.DataFrame:
-    """Average drift-level metric values for each detector.
-
-    With ``require_all_drifts=True`` (default), abrupt, gradual, and incremental
-    results are required for every detector, which is the final article
-    calculation. With ``False``, the mean is calculated over the drift types
-    currently available and is therefore provisional.
-    """
+    """Average drift-level metric values for each detector."""
     required_columns = {
         "configuration",
         "method",
@@ -261,9 +237,6 @@ def average_metrics_overall(
 
         for metric in ARTICLE_METRICS:
             values = pd.to_numeric(group[metric], errors="coerce")
-
-            # If a metric is undefined for any available drift, preserve NA
-            # rather than silently averaging only the remaining drift types.
             if values.isna().any():
                 row[metric] = np.nan
             else:
@@ -274,8 +247,7 @@ def average_metrics_overall(
     overall = pd.DataFrame(rows)
 
     configuration_rank = {
-        name: index
-        for index, name in enumerate(_configuration_order())
+        name: index for index, name in enumerate(_configuration_order())
     }
     overall["_configuration_order"] = overall["configuration"].map(
         configuration_rank
@@ -293,7 +265,7 @@ def article_table_for_drift(
     by_drift: pd.DataFrame,
     drift_type: str,
 ) -> pd.DataFrame:
-    """Return one drift table with the same metric columns used in the paper."""
+    """Return one drift table with the metric columns used in the paper."""
     if drift_type not in DRIFT_TYPES:
         raise ValueError(
             f"Unknown drift type {drift_type!r}. Choose from {DRIFT_TYPES}."
@@ -311,9 +283,7 @@ def overall_article_table(
     overall: pd.DataFrame,
 ) -> pd.DataFrame:
     """Return the overall detector table with article-style column names."""
-    table = overall[
-        ["configuration", *ARTICLE_METRICS]
-    ].copy()
+    table = overall[["configuration", *ARTICLE_METRICS]].copy()
     return _rename_article_columns(table)
 
 
@@ -324,12 +294,7 @@ def build_article_tables(
     require_all_distributions: bool = True,
     require_all_drifts: bool = True,
 ) -> dict[str, pd.DataFrame]:
-    """Build available drift tables and an overall comparison.
-
-    The default settings are strict and reproduce the final article tables.
-    Setting either requirement to ``False`` enables provisional reporting from
-    an incomplete experiment run.
-    """
+    """Build available drift tables and an overall comparison."""
     by_drift = average_metrics_by_drift(
         summary_file,
         article_na=article_na,
