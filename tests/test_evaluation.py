@@ -16,26 +16,27 @@ from mcdd.experiments import (
     run_archive_experiment,
     summarize_archive_results,
 )
-from mcdd.experiments.evaluation import _score_first_alarm
+from mcdd.experiments.evaluation import _aggregate, _score_first_alarm
 
 
 @pytest.mark.parametrize(
     ("alarm_index", "expected_outcome"),
     [
         (None, "missed"),
-        (100, "false_alarm"),
+        (90, "false_alarm"),
+        (99, "false_alarm"),
+        (100, "detected"),
         (101, "detected"),
         (119, "detected"),
-        (120, "false_alarm"),
-        (90, "false_alarm"),
-        (130, "false_alarm"),
+        (120, "detected"),
+        (121, "late_detection"),
+        (130, "late_detection"),
     ],
 )
-def test_alarm_scoring_uses_strict_interval_limits(
+def test_alarm_scoring_classifies_interval_boundaries(
     alarm_index: int | None,
     expected_outcome: str,
 ) -> None:
-    """Only start < detection < end should count as a valid detection."""
     outcome = _score_first_alarm(
         alarm_index=alarm_index,
         drift_start=100,
@@ -45,8 +46,74 @@ def test_alarm_scoring_uses_strict_interval_limits(
     assert outcome == expected_outcome
 
 
+def test_alarm_scoring_rejects_invalid_interval() -> None:
+    with pytest.raises(ValueError, match="valid_detection_end"):
+        _score_first_alarm(
+            alarm_index=100,
+            drift_start=120,
+            valid_detection_end=100,
+        )
+
+
+def test_aggregate_uses_false_alarms_and_missed_drifts_correctly() -> None:
+    results = pd.DataFrame(
+        {
+            "configuration": ["TEST"] * 5,
+            "TP": [1, 1, 0, 0, 0],
+            "FP": [0, 0, 1, 0, 0],
+            "FN": [0, 0, 0, 1, 1],
+            "delay": [100.0, 300.0, np.nan, np.nan, np.nan],
+        }
+    )
+
+    summary = _aggregate(results, group_columns=["configuration"])
+    row = summary.iloc[0]
+
+    assert int(row["replications"]) == 5
+    assert int(row["TP"]) == 2
+    assert int(row["FP"]) == 1
+    assert int(row["FN"]) == 2
+    assert np.isclose(row["FDR"], 1 / 3)
+    assert np.isclose(row["MDR"], 1 / 2)
+    assert np.isclose(row["IR"], 2 / 3)
+    assert np.isclose(row["mean_delay"], 200.0)
+
+
+def test_aggregate_returns_nan_for_undefined_metrics() -> None:
+    results = pd.DataFrame(
+        {
+            "configuration": ["TEST"],
+            "TP": [0],
+            "FP": [0],
+            "FN": [1],
+            "delay": [np.nan],
+        }
+    )
+
+    row = _aggregate(results, group_columns=["configuration"]).iloc[0]
+
+    assert pd.isna(row["FDR"])
+    assert np.isclose(row["MDR"], 1.0)
+    assert pd.isna(row["IR"])
+    assert pd.isna(row["mean_delay"])
+
+
+def test_aggregate_requires_one_classification_per_run() -> None:
+    invalid = pd.DataFrame(
+        {
+            "configuration": ["TEST"],
+            "TP": [0],
+            "FP": [1],
+            "FN": [1],
+            "delay": [np.nan],
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"TP \+ FP \+ FN = 1"):
+        _aggregate(invalid, group_columns=["configuration"])
+
+
 def test_get_configuration_uses_the_public_configuration_name() -> None:
-    """A configuration should be selected by its exact published abbreviation."""
     configuration = get_configuration("MCDD-G20kT")
 
     assert configuration.name == "MCDD-G20kT"
@@ -59,7 +126,6 @@ def test_get_configuration_uses_the_public_configuration_name() -> None:
 
 
 def _create_test_archive(path: Path, number_of_streams: int = 3) -> None:
-    """Create a small abrupt-normal HDF5 archive for integration tests."""
     base_stream = np.concatenate(
         (
             np.zeros(20, dtype=np.float64),
@@ -89,7 +155,6 @@ def _create_test_archive(path: Path, number_of_streams: int = 3) -> None:
 
 
 def test_read_stream_returns_values_and_metadata(tmp_path: Path) -> None:
-    """One stored row should be recoverable without loading the full archive."""
     archive_path = tmp_path / "abrupt_normal.h5"
     _create_test_archive(archive_path, number_of_streams=2)
 
@@ -109,7 +174,6 @@ def test_read_stream_returns_values_and_metadata(tmp_path: Path) -> None:
 def test_selected_archive_experiment_creates_per_run_and_summary_csv(
     tmp_path: Path,
 ) -> None:
-    """A reduced experiment should produce auditable per-run and summary files."""
     archive_path = tmp_path / "abrupt_normal.h5"
     per_run_path = tmp_path / "per_run.csv"
     summary_path = tmp_path / "summary.csv"
@@ -145,6 +209,7 @@ def test_selected_archive_experiment_creates_per_run_and_summary_csv(
     assert len(per_run) == 2
     assert per_run["configuration"].tolist() == ["TSH-TEST", "TSH-TEST"]
     assert per_run["row_index"].tolist() == [0, 1]
+    assert "late_delay" in per_run.columns
 
     assert len(summary) == 1
     assert summary.loc[0, "configuration"] == "TSH-TEST"
@@ -162,7 +227,6 @@ def test_selected_archive_experiment_creates_per_run_and_summary_csv(
 def test_archive_experiment_does_not_overwrite_by_default(
     tmp_path: Path,
 ) -> None:
-    """Existing result files should be protected unless overwrite is explicit."""
     archive_path = tmp_path / "abrupt_normal.h5"
     output_path = tmp_path / "per_run.csv"
     _create_test_archive(archive_path, number_of_streams=1)
