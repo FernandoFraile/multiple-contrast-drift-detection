@@ -6,7 +6,7 @@ import csv
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Literal, Sequence, TypeAlias
+from typing import Any, Literal, Sequence, TypeAlias
 
 import h5py
 import numpy as np
@@ -21,6 +21,12 @@ WindowMode: TypeAlias = Literal[
     "sliding",
     "growing_dynamic",
     "growing_fixed",
+]
+Outcome: TypeAlias = Literal[
+    "detected",
+    "false_alarm",
+    "late_detection",
+    "missed",
 ]
 
 
@@ -164,6 +170,7 @@ PER_RUN_FIELDS = (
     "drift_start",
     "valid_detection_end",
     "delay",
+    "late_delay",
     "TP",
     "FP",
     "FN",
@@ -216,9 +223,7 @@ def read_stream(
         )
         metadata = {
             "drift_type": _decode_attribute(archive.attrs["drift_type"]),
-            "distribution": _decode_attribute(
-                archive.attrs["distribution"]
-            ),
+            "distribution": _decode_attribute(archive.attrs["distribution"]),
             "row_index": int(row_index),
             "seed": int(archive["seeds"][row_index]),
             "drift_start": int(archive["drift_start"][row_index]),
@@ -256,7 +261,6 @@ def evaluate_single_stream(
     valid_detection_end = (
         drift_start + 2_000 if drift_type == "abrupt" else drift_end
     )
-
     outcome = _score_first_alarm(
         alarm_index=alarm_index,
         drift_start=drift_start,
@@ -268,6 +272,18 @@ def evaluate_single_stream(
         if outcome == "detected" and alarm_index is not None
         else None
     )
+    late_delay = (
+        alarm_index - valid_detection_end
+        if outcome == "late_detection" and alarm_index is not None
+        else None
+    )
+
+    true_positive = int(outcome == "detected")
+    false_positive = int(outcome == "false_alarm")
+    false_negative = int(outcome in {"late_detection", "missed"})
+
+    if true_positive + false_positive + false_negative != 1:
+        raise RuntimeError("Each run must be classified as exactly one TP, FP, or FN.")
 
     return {
         "configuration": configuration.name,
@@ -289,9 +305,10 @@ def evaluate_single_stream(
         "drift_start": drift_start,
         "valid_detection_end": valid_detection_end,
         "delay": delay,
-        "TP": int(outcome == "detected"),
-        "FP": int(outcome == "false_alarm"),
-        "FN": int(outcome == "missed"),
+        "late_delay": late_delay,
+        "TP": true_positive,
+        "FP": false_positive,
+        "FN": false_negative,
     }
 
 
@@ -300,23 +317,17 @@ def _score_first_alarm(
     alarm_index: int | None,
     drift_start: int,
     valid_detection_end: int,
-) -> str:
-    """Apply the scoring convention used in the original experiments.
-
-    Comparisons are deliberately strict: a valid detection must satisfy
-
-    ``drift_start < alarm_index < valid_detection_end``.
-
-    The original experiment convention is retained: when the first alarm is
-    outside the valid interval, the run is counted as a false alarm and the
-    underlying drift is marked as handled rather than additionally counted as
-    missed.
-    """
+) -> Outcome:
+    """Classify the first alarm relative to the valid detection interval."""
+    if valid_detection_end < drift_start:
+        raise ValueError("valid_detection_end must be greater than or equal to drift_start.")
     if alarm_index is None:
         return "missed"
-    if drift_start < alarm_index < valid_detection_end:
+    if alarm_index < drift_start:
+        return "false_alarm"
+    if alarm_index <= valid_detection_end:
         return "detected"
-    return "false_alarm"
+    return "late_detection"
 
 
 def _first_mcdd_alarm(
@@ -334,7 +345,6 @@ def _first_mcdd_alarm(
         correction=configuration.correction or "fdr_by",
         min_rejections=configuration.min_rejections,
     )
-
     batch_size = detector.batch_size
 
     for end_index in range(batch_size, len(values), batch_size):
@@ -350,11 +360,11 @@ def _first_tsh_alarm(
     configuration: ExperimentConfiguration,
 ) -> int | None:
     step_size = configuration.window_size // configuration.n_subwindows
-
-    if configuration.window_mode == "sliding":
-        start_index = configuration.window_size
-    else:
-        start_index = configuration.min_window_size or configuration.window_size
+    start_index = (
+        configuration.window_size
+        if configuration.window_mode == "sliding"
+        else configuration.min_window_size or configuration.window_size
+    )
 
     for end_index in range(start_index, len(values), step_size):
         if configuration.window_mode == "sliding":
@@ -370,7 +380,6 @@ def _first_tsh_alarm(
             values[window_start:window_midpoint],
             values[window_midpoint:end_index],
         )
-
         if pvalue < configuration.alpha:
             return int(end_index)
 
@@ -386,9 +395,7 @@ def _first_kswin_alarm(
     detector = drift.KSWIN(
         alpha=configuration.alpha,
         window_size=configuration.window_size,
-        stat_size=(
-            configuration.window_size // configuration.n_subwindows
-        ),
+        stat_size=configuration.window_size // configuration.n_subwindows,
         seed=42,
     )
 
@@ -405,10 +412,7 @@ def _first_lord_alarm(
     configuration: ExperimentConfiguration,
 ) -> int | None:
     step_size = configuration.window_size // configuration.n_subwindows
-    indices = list(
-        range(configuration.window_size, len(values), step_size)
-    )
-
+    indices = list(range(configuration.window_size, len(values), step_size))
     pvalues = np.empty(len(indices), dtype=np.float64)
 
     for position, end_index in enumerate(indices):
@@ -420,10 +424,7 @@ def _first_lord_alarm(
             values[window_midpoint:end_index],
         )
 
-    lag = max(
-        0,
-        math.ceil(configuration.window_size / step_size) - 1,
-    )
+    lag = max(0, math.ceil(configuration.window_size / step_size) - 1)
     procedure = LORDLocalDependence(
         alpha=configuration.alpha,
         number_of_hypotheses=len(pvalues),
@@ -431,9 +432,7 @@ def _first_lord_alarm(
         start_fraction=0.1,
         gamma_exponent=1.6,
     )
-    rejections = procedure.run(pvalues)
-    rejection_positions = np.flatnonzero(rejections)
-
+    rejection_positions = np.flatnonzero(procedure.run(pvalues))
     if rejection_positions.size == 0:
         return None
 
@@ -466,7 +465,6 @@ def _call_test(
 
     if not 0.0 <= pvalue <= 1.0:
         raise ValueError(f"Invalid p-value: {pvalue}.")
-
     return pvalue
 
 
@@ -474,19 +472,12 @@ def run_experiment_suite(
     *,
     data_directory: str | Path,
     output_file: str | Path,
-    configurations: Sequence[
-        ExperimentConfiguration
-    ] = PAPER_CONFIGURATIONS,
+    configurations: Sequence[ExperimentConfiguration] = PAPER_CONFIGURATIONS,
     max_streams_per_archive: int | None = None,
     overwrite: bool = False,
     progress_every: int = 25,
 ) -> Path:
-    """Evaluate all configurations and write one CSV row per run.
-
-    Streams are loaded one at a time and reused across all configurations.
-    Results are written incrementally so a long experiment does not need to
-    retain all rows in memory.
-    """
+    """Evaluate all configurations and write one CSV row per run."""
     archive_paths = expected_dataset_paths(data_directory)
     output_path = Path(output_file)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -498,7 +489,6 @@ def run_experiment_suite(
 
     total_streams = 0
     archive_limits: dict[Path, int] = {}
-
     for archive_path in archive_paths:
         with h5py.File(archive_path, "r") as archive:
             available = int(archive["values"].shape[0])
@@ -519,48 +509,35 @@ def run_experiment_suite(
 
         for archive_path in archive_paths:
             with h5py.File(archive_path, "r") as archive:
-                drift_type = _decode_attribute(
-                    archive.attrs["drift_type"]
-                )
-                distribution = _decode_attribute(
-                    archive.attrs["distribution"]
-                )
+                drift_type = _decode_attribute(archive.attrs["drift_type"])
+                distribution = _decode_attribute(archive.attrs["distribution"])
                 limit = archive_limits[archive_path]
 
                 for row_index in range(limit):
-                    values = np.asarray(
-                        archive["values"][row_index],
-                        dtype=np.float64,
-                    )
+                    values = np.asarray(archive["values"][row_index], dtype=np.float64)
                     seed = int(archive["seeds"][row_index])
-                    drift_start = int(
-                        archive["drift_start"][row_index]
-                    )
+                    drift_start = int(archive["drift_start"][row_index])
                     drift_end = int(archive["drift_end"][row_index])
 
                     for configuration in configurations:
-                        result = evaluate_single_stream(
-                            values,
-                            drift_type=drift_type,
-                            distribution=distribution,
-                            row_index=row_index,
-                            seed=seed,
-                            drift_start=drift_start,
-                            drift_end=drift_end,
-                            configuration=configuration,
+                        writer.writerow(
+                            evaluate_single_stream(
+                                values,
+                                drift_type=drift_type,
+                                distribution=distribution,
+                                row_index=row_index,
+                                seed=seed,
+                                drift_start=drift_start,
+                                drift_end=drift_end,
+                                configuration=configuration,
+                            )
                         )
-                        writer.writerow(result)
                         completed_runs += 1
 
                     handle.flush()
-
-                    if (
-                        progress_every > 0
-                        and (row_index + 1) % progress_every == 0
-                    ):
+                    if progress_every > 0 and (row_index + 1) % progress_every == 0:
                         print(
-                            f"{archive_path.name}: "
-                            f"{row_index + 1}/{limit} streams; "
+                            f"{archive_path.name}: {row_index + 1}/{limit} streams; "
                             f"{completed_runs}/{total_runs} runs completed.",
                             flush=True,
                         )
@@ -569,34 +546,19 @@ def run_experiment_suite(
     return output_path
 
 
-
 def get_configuration(
     name: str,
-    configurations: Sequence[
-        ExperimentConfiguration
-    ] = PAPER_CONFIGURATIONS,
+    configurations: Sequence[ExperimentConfiguration] = PAPER_CONFIGURATIONS,
 ) -> ExperimentConfiguration:
     """Return one experiment configuration by its exact public name."""
-    matches = [
-        configuration
-        for configuration in configurations
-        if configuration.name == name
-    ]
-
+    matches = [configuration for configuration in configurations if configuration.name == name]
     if not matches:
-        available = ", ".join(
-            configuration.name for configuration in configurations
-        )
+        available = ", ".join(configuration.name for configuration in configurations)
         raise ValueError(
-            f"Unknown configuration '{name}'. Available configurations: "
-            f"{available}."
+            f"Unknown configuration '{name}'. Available configurations: {available}."
         )
-
     if len(matches) > 1:
-        raise ValueError(
-            f"Configuration name '{name}' is not unique."
-        )
-
+        raise ValueError(f"Configuration name '{name}' is not unique.")
     return matches[0]
 
 
@@ -609,40 +571,13 @@ def run_archive_experiment(
     overwrite: bool = False,
     progress_every: int = 25,
 ) -> Path:
-    """Evaluate one detector configuration on one HDF5 dataset archive.
-
-    Parameters
-    ----------
-    archive_path:
-        Path to one archive such as ``data/datasets/abrupt_normal.h5``.
-    configuration:
-        The single detector configuration to evaluate.
-    output_file:
-        CSV file receiving one row per stream.
-    max_streams:
-        Optional number of streams to evaluate. ``None`` evaluates every
-        stream in the selected archive.
-    overwrite:
-        Whether an existing output CSV may be replaced.
-    progress_every:
-        Print progress after this many streams. Set to zero to disable progress
-        messages.
-
-    Returns
-    -------
-    pathlib.Path
-        Path to the generated per-run CSV file.
-    """
+    """Evaluate one detector configuration on one HDF5 dataset archive."""
     source_path = Path(archive_path)
     output_path = Path(output_file)
 
     if not source_path.is_file():
-        raise FileNotFoundError(
-            f"Dataset archive not found: {source_path}."
-        )
-
+        raise FileNotFoundError(f"Dataset archive not found: {source_path}.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-
     if output_path.exists() and not overwrite:
         raise FileExistsError(
             f"{output_path} already exists. Set overwrite=True to replace it."
@@ -650,7 +585,6 @@ def run_archive_experiment(
 
     with h5py.File(source_path, "r") as archive:
         available_streams = int(archive["values"].shape[0])
-
         if max_streams is None:
             number_of_streams = available_streams
         else:
@@ -658,59 +592,34 @@ def run_archive_experiment(
                 raise ValueError("max_streams must be positive or None.")
             number_of_streams = min(int(max_streams), available_streams)
 
-        drift_type = _decode_attribute(
-            archive.attrs["drift_type"]
-        )
-        distribution = _decode_attribute(
-            archive.attrs["distribution"]
-        )
-
-        temporary_path = output_path.with_suffix(
-            output_path.suffix + ".part"
-        )
+        drift_type = _decode_attribute(archive.attrs["drift_type"])
+        distribution = _decode_attribute(archive.attrs["distribution"])
+        temporary_path = output_path.with_suffix(output_path.suffix + ".part")
 
         try:
-            with temporary_path.open(
-                "w",
-                newline="",
-                encoding="utf-8",
-            ) as handle:
-                writer = csv.DictWriter(
-                    handle,
-                    fieldnames=PER_RUN_FIELDS,
-                )
+            with temporary_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=PER_RUN_FIELDS)
                 writer.writeheader()
 
                 for row_index in range(number_of_streams):
-                    values = np.asarray(
-                        archive["values"][row_index],
-                        dtype=np.float64,
-                    )
-
+                    values = np.asarray(archive["values"][row_index], dtype=np.float64)
                     result = evaluate_single_stream(
                         values,
                         drift_type=drift_type,
                         distribution=distribution,
                         row_index=row_index,
                         seed=int(archive["seeds"][row_index]),
-                        drift_start=int(
-                            archive["drift_start"][row_index]
-                        ),
-                        drift_end=int(
-                            archive["drift_end"][row_index]
-                        ),
+                        drift_start=int(archive["drift_start"][row_index]),
+                        drift_end=int(archive["drift_end"][row_index]),
                         configuration=configuration,
                     )
                     writer.writerow(result)
                     handle.flush()
 
                     completed = row_index + 1
-                    if (
-                        progress_every > 0
-                        and (
-                            completed % progress_every == 0
-                            or completed == number_of_streams
-                        )
+                    if progress_every > 0 and (
+                        completed % progress_every == 0
+                        or completed == number_of_streams
                     ):
                         print(
                             f"{configuration.name} on {source_path.name}: "
@@ -735,14 +644,10 @@ def summarize_archive_results(
 ) -> pd.DataFrame:
     """Create one summary row for a single archive/configuration experiment."""
     per_run_path = Path(per_run_file)
-
     if not per_run_path.is_file():
-        raise FileNotFoundError(
-            f"Per-run result file not found: {per_run_path}."
-        )
+        raise FileNotFoundError(f"Per-run result file not found: {per_run_path}.")
 
     results = pd.read_csv(per_run_path)
-
     if results.empty:
         raise ValueError("The per-run result file is empty.")
 
@@ -760,11 +665,7 @@ def summarize_archive_results(
                 "contains multiple values."
             )
 
-    summary = _aggregate(
-        results,
-        group_columns=list(identifying_columns),
-    )
-
+    summary = _aggregate(results, group_columns=list(identifying_columns))
     ordered_columns = [
         "configuration",
         "method",
@@ -786,8 +687,8 @@ def summarize_archive_results(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         summary.to_csv(output_path, index=False)
         print(f"Summary results written to {output_path}.")
-
     return summary
+
 
 def summarize_results(
     *,
@@ -800,37 +701,18 @@ def summarize_results(
 
     exact = _aggregate(
         results,
-        group_columns=[
-            "configuration",
-            "method",
-            "drift_type",
-            "distribution",
-        ],
+        group_columns=["configuration", "method", "drift_type", "distribution"],
     )
-
     by_drift = _aggregate(
         results,
-        group_columns=[
-            "configuration",
-            "method",
-            "drift_type",
-        ],
+        group_columns=["configuration", "method", "drift_type"],
     )
     by_drift["distribution"] = "all"
-
-    overall = _aggregate(
-        results,
-        group_columns=["configuration", "method"],
-    )
+    overall = _aggregate(results, group_columns=["configuration", "method"])
     overall["drift_type"] = "all"
     overall["distribution"] = "all"
 
-    summary = pd.concat(
-        [exact, by_drift, overall],
-        ignore_index=True,
-        sort=False,
-    )
-
+    summary = pd.concat([exact, by_drift, overall], ignore_index=True, sort=False)
     ordered_columns = [
         "configuration",
         "method",
@@ -855,7 +737,6 @@ def summarize_results(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         summary.to_csv(output_path, index=False)
         print(f"Summary results written to {output_path}.")
-
     return summary
 
 
@@ -864,8 +745,18 @@ def _aggregate(
     *,
     group_columns: list[str],
 ) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
+    required = {"TP", "FP", "FN", "delay", *group_columns}
+    missing = sorted(required.difference(results.columns))
+    if missing:
+        raise ValueError(
+            "The per-run results are missing required columns: " + ", ".join(missing)
+        )
 
+    classifications = results[["TP", "FP", "FN"]].sum(axis=1)
+    if not classifications.eq(1).all():
+        raise ValueError("Every per-run row must satisfy TP + FP + FN = 1.")
+
+    rows: list[dict[str, Any]] = []
     for keys, group in results.groupby(group_columns, dropna=False):
         if not isinstance(keys, tuple):
             keys = (keys,)
@@ -874,7 +765,6 @@ def _aggregate(
         true_positives = int(group["TP"].sum())
         false_positives = int(group["FP"].sum())
         false_negatives = int(group["FN"].sum())
-
         detections = true_positives + false_positives
         true_drifts = true_positives + false_negatives
 
@@ -885,24 +775,18 @@ def _aggregate(
                 "FP": false_positives,
                 "FN": false_negatives,
                 "FDR": (
-                    false_positives / detections
-                    if detections > 0
-                    else 0.0
+                    false_positives / detections if detections > 0 else np.nan
                 ),
                 "MDR": (
-                    false_negatives / true_drifts
-                    if true_drifts > 0
-                    else 0.0
+                    false_negatives / true_drifts if true_drifts > 0 else np.nan
                 ),
                 "IR": (
-                    true_positives / detections
-                    if detections > 0
-                    else 0.0
+                    true_positives / detections if detections > 0 else np.nan
                 ),
                 "mean_delay": (
                     float(group["delay"].dropna().mean())
                     if group["delay"].notna().any()
-                    else 0.0
+                    else np.nan
                 ),
             }
         )
