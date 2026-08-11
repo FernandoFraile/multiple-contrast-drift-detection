@@ -41,6 +41,8 @@ RESULT_KEY_COLUMNS = (
     "distribution",
     "row_index",
 )
+REQUIRED_SCORING_COLUMNS = {"outcome", "late_delay", "TP", "FP", "FN"}
+VALID_OUTCOMES = {"detected", "false_alarm", "late_detection", "missed"}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -237,6 +239,29 @@ def _duplicate_keys(
     )
 
 
+def _validate_existing_scoring_results(existing: pd.DataFrame) -> None:
+    missing = sorted(REQUIRED_SCORING_COLUMNS.difference(existing.columns))
+    if missing:
+        raise ValueError(
+            "Existing per-run results use an incompatible scoring schema. "
+            "Regenerate them with --overwrite before appending new runs."
+        )
+
+    outcomes = set(existing["outcome"].dropna().astype(str).unique())
+    if not outcomes.issubset(VALID_OUTCOMES):
+        raise ValueError(
+            "Existing per-run results contain incompatible outcome values. "
+            "Regenerate them with --overwrite before appending new runs."
+        )
+
+    classifications = existing[["TP", "FP", "FN"]].sum(axis=1)
+    if not classifications.eq(1).all():
+        raise ValueError(
+            "Existing per-run results do not satisfy TP + FP + FN = 1. "
+            "Regenerate them with --overwrite before appending new runs."
+        )
+
+
 def _write_results_atomically(
     results: pd.DataFrame,
     output_file: Path,
@@ -263,6 +288,7 @@ def _merge_partial_results(
     if append:
         if per_run_file.is_file():
             existing = pd.read_csv(per_run_file)
+            _validate_existing_scoring_results(existing)
             duplicates = _duplicate_keys(existing, new_results)
 
             if not duplicates.empty:
