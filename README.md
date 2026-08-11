@@ -7,11 +7,11 @@ The repository includes:
 - generators for abrupt, gradual, and incremental concept drift;
 - normal, exponential, and gamma data streams;
 - reproducible HDF5 generation for the complete 9,000-stream benchmark;
-- the official `MCDD` detector implementation;
+- the `MCDD` detector implementation;
 - Traditional Single Hypothesis, KSWIN, and LORD-LD baselines;
 - command-line and notebook workflows for complete and focused experiments;
 - article-style result aggregation and LaTeX output;
-- lightweight automated software tests.
+- automated software tests.
 
 SEED is not included in the current experiment implementation.
 
@@ -30,7 +30,7 @@ SEED is not included in the current experiment implementation.
 │   ├── dataset_generation_demo.ipynb
 │   └── run_experiments.ipynb
 ├── results/
-│   └── README.md              # generated CSV files are not versioned yet
+│   └── README.md
 ├── scripts/
 │   ├── generate_datasets.py
 │   ├── run_experiments.py
@@ -77,11 +77,11 @@ The complete benchmark contains:
 - transition lengths selected from 1,000, 2,000, or 3,000 observations for gradual and incremental drift;
 - seeds 42 through 1041 for the 1,000 replications of each scenario.
 
-Gradual and incremental transitions are generated from the selected distribution. Exponential and gamma transition intervals are therefore not generated from a normal distribution.
+Gradual transitions mix observations from the old and new concepts according to a sigmoid probability. Incremental transitions interpolate the parameters of the selected distribution throughout the transition interval.
 
 ### Generate the HDF5 files
 
-The complete `.h5` benchmark files are intentionally not stored in GitHub because of their size. They can be reproduced from the fixed generation code and seeds provided here.
+The complete `.h5` benchmark files are not stored in GitHub because of their size. They can be reproduced from the generation code and fixed seeds provided here.
 
 From the repository root:
 
@@ -157,13 +157,7 @@ Supported window modes are:
 
 For `growing_fixed`, only complete subwindows are evaluated. When the maximum window size is not divisible by the subwindow size, the most recent complete portion is retained. For example, the 20,000-sample configuration uses the most recent 19,800 observations with 600-sample subwindows.
 
-MCDD uses a latched alarm state: after the first alarm, `drift_detected` remains `True` until:
-
-```python
-detector.reset()
-```
-
-is called.
+MCDD uses a latched alarm state: after the first alarm, `drift_detected` remains `True` until `detector.reset()` is called.
 
 ## Experiment configurations
 
@@ -186,13 +180,20 @@ All configurations use `alpha=0.01`. MCDD uses the Benjamini--Yekutieli correcti
 
 ## Experiment scoring
 
-The evaluation preserves the original experiment convention:
+Each stream contains one known concept drift. The first alarm is classified relative to the drift start and the valid detection deadline:
 
-- valid detections use the strict condition `drift_start < detection < valid_detection_end`;
-- abrupt drift has a 2,000-observation valid detection interval;
-- gradual and incremental drift use their generated transition interval;
-- when the first alarm is outside the valid interval, it is counted as a false alarm and the drift is not additionally counted as missed;
-- when no alarm occurs, the drift is counted as missed.
+- `alarm_index < drift_start` → **false alarm (FP)**;
+- `drift_start <= alarm_index <= valid_detection_end` → **valid detection (TP)**;
+- `alarm_index > valid_detection_end` → **late detection (FN)**;
+- no alarm → **missed detection (FN)**.
+
+For abrupt drift, the valid detection deadline is 2,000 observations after the drift point. For gradual and incremental drift, the deadline is the end of the generated transition interval.
+
+Late detections are retained as a distinct per-run outcome and their delay beyond the deadline is stored in `late_delay`, but they contribute to FN rather than FP. Thus each run satisfies:
+
+```text
+TP + FP + FN = 1
+```
 
 The reported metrics are:
 
@@ -202,11 +203,11 @@ MDR = FN / (TP + FN)
 IR  = TP / (TP + FP)
 ```
 
-Mean Delay is calculated only from valid detections.
+If a denominator is zero, the corresponding metric is undefined and is stored as `NaN`. Mean Delay is calculated only from valid detections and is also `NaN` when no valid detection exists.
 
 ## Run experiments from the terminal
 
-After generating the HDF5 files, the complete benchmark can still be run with:
+After generating the HDF5 files, the complete benchmark can be run with:
 
 ```bash
 python scripts/run_experiments.py
@@ -220,9 +221,7 @@ results/
 └── summary_results.csv
 ```
 
-### Recommended partial execution by drift type
-
-The benchmark can also be run in separate sessions. This is useful for long experiments because each drift type can be validated before moving to the next one.
+### Partial execution by drift type
 
 Run abrupt drift first:
 
@@ -230,9 +229,7 @@ Run abrupt drift first:
 python scripts/run_experiments.py --drift abrupt
 ```
 
-This evaluates the three abrupt archives with all ten detector configurations, producing 30,000 detector-stream runs when all 1,000 streams are used.
-
-After validating the abrupt results, append gradual drift to the same master CSV files:
+Append gradual drift to the same master CSV files:
 
 ```bash
 python scripts/run_experiments.py --drift gradual --append
@@ -244,11 +241,9 @@ Then append incremental drift:
 python scripts/run_experiments.py --drift incremental --append
 ```
 
-After the final command, `per_run_results.csv` contains all 90,000 runs and `summary_results.csv` is regenerated from the complete accumulated result set.
+The `--append` mode checks the run key (`configuration`, `drift_type`, `distribution`, `row_index`) and refuses to add duplicate runs.
 
-The `--append` mode checks the run key (`configuration`, `drift_type`, `distribution`, `row_index`) and refuses to add duplicate runs. This prevents accidentally executing the same block twice.
-
-### Reduced validation before a full block
+### Reduced validation
 
 For example, test abrupt drift using only two streams from each distribution:
 
@@ -256,13 +251,11 @@ For example, test abrupt drift using only two streams from each distribution:
 python scripts/run_experiments.py --drift abrupt --max-streams 2
 ```
 
-If that reduced validation produced `results/per_run_results.csv`, replace it before the definitive abrupt run with:
+Replace a reduced validation result before a definitive run with:
 
 ```bash
 python scripts/run_experiments.py --drift abrupt --overwrite
 ```
-
-Then continue with gradual and incremental using `--append`.
 
 ### More specific filters
 
@@ -278,49 +271,7 @@ A single detector configuration can also be selected:
 python scripts/run_experiments.py --drift abrupt --configuration MCDD-S
 ```
 
-Filters can be combined:
-
-```bash
-python scripts/run_experiments.py \
-    --drift abrupt \
-    --distribution normal \
-    --configuration MCDD-S
-```
-
-The same option can be repeated to select multiple values, for example:
-
-```bash
-python scripts/run_experiments.py \
-    --drift abrupt \
-    --drift gradual \
-    --configuration MCDD-S \
-    --configuration MCDD-G20k
-```
-
-Available configuration names are:
-
-```text
-MCDD-S
-MCDD-G20k
-MCDD-G30k
-MCDD-G20kT
-MCDD-G30kT
-TSH-S
-TSH-G20k
-TSH-G30k
-KSWIN
-LORD-LD
-```
-
-To replace the existing master result file explicitly, use `--overwrite`. To add a new non-overlapping selection, use `--append`. Without either option, an existing `per_run_results.csv` is protected from replacement.
-
-Use:
-
-```bash
-python scripts/run_experiments.py --help
-```
-
-for all options.
+Filters can be combined and repeated to select multiple values. Use `python scripts/run_experiments.py --help` for all options.
 
 ## Notebook experiment workflow
 
@@ -330,62 +281,20 @@ The same workflow is available interactively in:
 notebooks/run_experiments.ipynb
 ```
 
-The notebook includes:
-
-- dataset validation;
-- a quick one-stream check;
-- execution of one detector on one selected dataset;
-- complete 90,000-run execution;
-- inspection of generated CSV files;
-- article-style result tables;
-- optional LaTeX table generation.
-
-For the complete benchmark set:
-
-```python
-RUN_FULL_EXPERIMENTS = True
-MAX_STREAMS_PER_ARCHIVE = None
-```
+The notebook includes dataset validation, a quick one-stream check, selected experiments, complete experiment execution, inspection of generated CSV files, article-style result tables, and optional LaTeX output.
 
 ## Article-style result tables
 
 The article tables are generated from the distribution-specific rows in `results/summary_results.csv`.
 
-For every detector and drift type, the reporting layer computes the arithmetic mean of FDR, MDR, IR, and Mean Delay across:
+For every detector and drift type, the reporting layer computes the arithmetic mean of FDR, MDR, IR, and Mean Delay across normal, exponential, and gamma distributions. The `distribution="all"` pooled rows created by `summarize_results` are not used for this step.
 
-```text
-normal
-exponential
-gamma
-```
+The overall comparison is obtained by averaging the three drift-level values: abrupt, gradual, and incremental.
 
-The `distribution="all"` pooled rows created by `summarize_results` are deliberately ignored for this step.
-
-The overall comparison is then obtained by averaging the three drift-level values:
-
-```text
-abrupt
-gradual
-incremental
-```
-
-For scenarios in which a detector produces only false alarms and no valid drift detections, the article-style `NA` convention is applied to metrics that are not meaningful.
-
-### Display the article tables from the terminal
-
-After `summary_results.csv` has been generated:
+Display the tables with:
 
 ```bash
 python scripts/show_results.py
-```
-
-This prints, with four decimal places:
-
-```text
-Abrupt drift
-Gradual drift
-Incremental drift
-Overall comparison
 ```
 
 To print LaTeX versions:
@@ -394,21 +303,9 @@ To print LaTeX versions:
 python scripts/show_results.py --latex
 ```
 
-Other options include:
-
-```bash
-python scripts/show_results.py --decimals 4
-python scripts/show_results.py --summary-file path/to/summary_results.csv
-python scripts/show_results.py --help
-```
-
-The underlying functions are implemented in `src/mcdd/experiments/reporting.py` and are also used directly by the experiment notebook.
-
 ## Results and version control
 
-Generated result CSV files are intentionally not committed to the repository at this stage. They are excluded through `.gitignore` and can be reproduced with the supplied workflows.
-
-See `results/README.md` for details.
+Generated result CSV files are excluded through `.gitignore` and can be reproduced with the supplied workflows. See `results/README.md` for details.
 
 ## Automated tests
 
@@ -418,7 +315,7 @@ Run the complete software test suite with:
 python -m pytest -q
 ```
 
-The tests cover deterministic generation, drift metadata, non-negative support for exponential and gamma data, MCDD alarm/reset behavior, `growing_fixed` window handling, strict detection scoring, HDF5 reading, CSV generation, and article-style result aggregation.
+The tests cover deterministic generation, drift metadata, non-negative support for exponential and gamma data, MCDD alarm/reset behavior, growing-window handling, detection scoring, HDF5 reading, CSV generation, metric aggregation, and article-style result reporting.
 
 ## Citation
 
