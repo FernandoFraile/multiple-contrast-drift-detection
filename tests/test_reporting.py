@@ -121,10 +121,15 @@ def test_overall_table_averages_the_three_drift_tables(tmp_path: Path) -> None:
     overall = overall_article_table(average_metrics_overall(by_drift))
     mcdd = overall.loc[overall["Config"] == "MCDD-S"].iloc[0]
 
-    assert np.isclose(mcdd["FDR"], 0.30)
-    assert np.isclose(mcdd["MDR"], 0.10)
-    assert np.isclose(mcdd["IR"], 0.70)
-    assert np.isclose(mcdd["Mean Delay"], 300.0)
+    expected_fdr = np.mean([0.20, 0.30, 0.40])
+    expected_mdr = np.mean([0.20, 0.10, 0.10])
+    expected_ir = np.mean([0.80, 0.70, 0.60])
+    expected_mean_delay = np.mean([200.0, 300.0, 400.0])
+
+    assert np.isclose(mcdd["FDR"], expected_fdr)
+    assert np.isclose(mcdd["MDR"], expected_mdr)
+    assert np.isclose(mcdd["IR"], expected_ir)
+    assert np.isclose(mcdd["Mean Delay"], expected_mean_delay)
 
 
 def test_undefined_metrics_are_preserved_in_article_reporting(
