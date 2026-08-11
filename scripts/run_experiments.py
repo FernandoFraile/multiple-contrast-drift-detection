@@ -3,9 +3,8 @@
 
 The runner supports both the complete 90,000-run benchmark and partial
 executions filtered by drift type, distribution, or detector configuration.
-Partial executions can be appended safely to the same master result file,
-which makes it possible to run abrupt, gradual, and incremental drift in
-separate sessions without repeating completed work.
+Partial executions can be appended safely to the same master result file or
+used to replace only a selected experiment block.
 """
 
 from __future__ import annotations
@@ -18,8 +17,6 @@ import sys
 
 import pandas as pd
 
-# Allow direct execution from the repository root without installing the
-# package first.
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIRECTORY = REPOSITORY_ROOT / "src"
 if str(SOURCE_DIRECTORY) not in sys.path:
@@ -43,6 +40,13 @@ RESULT_KEY_COLUMNS = (
     "distribution",
     "row_index",
 )
+SELECTION_COLUMNS = (
+    "configuration",
+    "drift_type",
+    "distribution",
+)
+REQUIRED_SCORING_COLUMNS = {"outcome", "late_delay", "TP", "FP", "FN"}
+VALID_OUTCOMES = {"detected", "false_alarm", "late_detection", "missed"}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -121,18 +125,27 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help=(
             "Replace the existing master per_run_results.csv with only the "
-            "current selection. Useful after a reduced validation run."
+            "current selection."
         ),
     )
     write_mode.add_argument(
         "--append",
         action="store_true",
         help=(
-            "Append the current selection to an existing master result file "
-            "and regenerate summary_results.csv. Duplicate runs are rejected."
+            "Append the current selection to an existing master result file. "
+            "Duplicate runs are rejected."
         ),
     )
-
+    write_mode.add_argument(
+        "--replace-selection",
+        "--replace",
+        dest="replace_selection",
+        action="store_true",
+        help=(
+            "Replace the complete existing block selected by configuration, "
+            "drift type, and distribution, while preserving all other results."
+        ),
+    )
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -148,7 +161,6 @@ def parse_arguments() -> argparse.Namespace:
 def _selected_configurations(names: list[str] | None):
     if not names:
         return PAPER_CONFIGURATIONS
-
     unique_names = list(dict.fromkeys(names))
     return tuple(get_configuration(name) for name in unique_names)
 
@@ -185,14 +197,12 @@ def _selected_archive_paths(
         for distribution in distributions
     ]
     missing = [path for path in paths if not path.is_file()]
-
     if missing:
         missing_text = "\n".join(f"- {path}" for path in missing)
         raise FileNotFoundError(
             "The following selected dataset archives are missing:\n"
             + missing_text
         )
-
     return paths
 
 
@@ -208,16 +218,12 @@ def _run_filtered_selection(
 
     with tempfile.TemporaryDirectory(prefix="mcdd_partial_") as temporary:
         temporary_directory = Path(temporary)
-
         for archive_path in archive_paths:
             for configuration in configurations:
-                safe_configuration = (
-                    configuration.name.lower().replace("-", "_")
-                )
+                safe_configuration = configuration.name.lower().replace("-", "_")
                 temporary_file = temporary_directory / (
                     f"{archive_path.stem}__{safe_configuration}.csv"
                 )
-
                 run_archive_experiment(
                     archive_path=archive_path,
                     configuration=configuration,
@@ -230,7 +236,6 @@ def _run_filtered_selection(
 
     if not frames:
         raise RuntimeError("The selected experiment did not produce any rows.")
-
     return pd.concat(frames, ignore_index=True)
 
 
@@ -246,6 +251,54 @@ def _duplicate_keys(
         on=list(RESULT_KEY_COLUMNS),
         how="inner",
     )
+
+
+def _validate_existing_scoring_results(existing: pd.DataFrame) -> None:
+    missing = sorted(REQUIRED_SCORING_COLUMNS.difference(existing.columns))
+    if missing:
+        raise ValueError(
+            "Existing per-run results use an incompatible scoring schema. "
+            "Regenerate them with --overwrite before combining new runs."
+        )
+
+    outcomes = set(existing["outcome"].dropna().astype(str).unique())
+    if not outcomes.issubset(VALID_OUTCOMES):
+        raise ValueError(
+            "Existing per-run results contain incompatible outcome values. "
+            "Regenerate them with --overwrite before combining new runs."
+        )
+
+    classifications = existing[["TP", "FP", "FN"]].sum(axis=1)
+    if not classifications.eq(1).all():
+        raise ValueError(
+            "Existing per-run results do not satisfy TP + FP + FN = 1. "
+            "Regenerate them with --overwrite before combining new runs."
+        )
+
+
+def _replace_selected_blocks(
+    existing: pd.DataFrame,
+    new_results: pd.DataFrame,
+) -> pd.DataFrame:
+    """Replace complete configuration/drift/distribution blocks."""
+    duplicate_new = new_results.duplicated(
+        subset=list(RESULT_KEY_COLUMNS),
+        keep=False,
+    )
+    if duplicate_new.any():
+        raise ValueError(
+            "The current selection produced duplicate run keys and cannot be "
+            "used for selective replacement."
+        )
+
+    existing_blocks = pd.MultiIndex.from_frame(
+        existing.loc[:, SELECTION_COLUMNS]
+    )
+    replacement_blocks = pd.MultiIndex.from_frame(
+        new_results.loc[:, SELECTION_COLUMNS].drop_duplicates()
+    )
+    preserved = existing.loc[~existing_blocks.isin(replacement_blocks)].copy()
+    return pd.concat([preserved, new_results], ignore_index=True)
 
 
 def _write_results_atomically(
@@ -269,27 +322,28 @@ def _merge_partial_results(
     per_run_file: Path,
     append: bool,
     overwrite: bool,
+    replace_selection: bool,
 ) -> pd.DataFrame:
-    """Write or append a filtered result selection safely."""
-    if append:
+    """Write, append, or selectively replace filtered result rows."""
+    if append or replace_selection:
         if per_run_file.is_file():
             existing = pd.read_csv(per_run_file)
-            duplicates = _duplicate_keys(existing, new_results)
+            _validate_existing_scoring_results(existing)
 
-            if not duplicates.empty:
-                examples = duplicates.head(5).to_string(index=False)
-                raise ValueError(
-                    f"Refusing to append {len(duplicates)} duplicate runs. "
-                    "The same configuration/drift/distribution/row_index "
-                    "combination is already present. Use --overwrite to "
-                    "start again, or choose a selection that has not yet "
-                    f"been executed. Example duplicates:\n{examples}"
-                )
-
-            combined = pd.concat(
-                [existing, new_results],
-                ignore_index=True,
-            )
+            if append:
+                duplicates = _duplicate_keys(existing, new_results)
+                if not duplicates.empty:
+                    examples = duplicates.head(5).to_string(index=False)
+                    raise ValueError(
+                        f"Refusing to append {len(duplicates)} duplicate runs. "
+                        "Use --replace-selection to recompute the selected "
+                        "experiment block, or --overwrite to replace the "
+                        "whole master file. "
+                        f"Example duplicates:\n{examples}"
+                    )
+                combined = pd.concat([existing, new_results], ignore_index=True)
+            else:
+                combined = _replace_selected_blocks(existing, new_results)
         else:
             combined = new_results
 
@@ -298,8 +352,9 @@ def _merge_partial_results(
 
     if per_run_file.exists() and not overwrite:
         raise FileExistsError(
-            f"{per_run_file} already exists. Use --append to add a new "
-            "selection or --overwrite to replace it."
+            f"{per_run_file} already exists. Use --append to add new runs, "
+            "--replace-selection to recompute a selected block, or "
+            "--overwrite to replace the whole master file."
         )
 
     _write_results_atomically(new_results, per_run_file)
@@ -326,10 +381,7 @@ def main() -> int:
     summary_file = results_directory / "summary_results.csv"
 
     drift_types = _selected_values(arguments.drift, DRIFT_TYPES)
-    distributions = _selected_values(
-        arguments.distribution,
-        DISTRIBUTIONS,
-    )
+    distributions = _selected_values(arguments.distribution, DISTRIBUTIONS)
     configurations = _selected_configurations(arguments.configuration)
 
     streams_per_archive = (
@@ -353,6 +405,8 @@ def main() -> int:
         + (
             "append"
             if arguments.append
+            else "replace selection"
+            if arguments.replace_selection
             else "overwrite"
             if arguments.overwrite
             else "protect existing results"
@@ -360,17 +414,17 @@ def main() -> int:
     )
 
     started_at = time.monotonic()
-
     complete_selection = _is_complete_selection(
         drift_types,
         distributions,
         len(configurations),
     )
 
-    # Keep the original efficient full-suite path when the complete benchmark
-    # is requested in one execution. Filtered or append runs use the archive
-    # runner so only the requested work is performed.
-    if complete_selection and not arguments.append:
+    if (
+        complete_selection
+        and not arguments.append
+        and not arguments.replace_selection
+    ):
         run_experiment_suite(
             data_directory=data_directory,
             output_file=per_run_file,
@@ -396,10 +450,9 @@ def main() -> int:
             per_run_file=per_run_file,
             append=arguments.append,
             overwrite=arguments.overwrite,
+            replace_selection=arguments.replace_selection,
         )
-        print(
-            f"Master per-run file now contains {len(combined):,} rows."
-        )
+        print(f"Master per-run file now contains {len(combined):,} rows.")
 
     summary = summarize_results(
         per_run_file=per_run_file,
