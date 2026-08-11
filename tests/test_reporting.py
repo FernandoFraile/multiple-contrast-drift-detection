@@ -60,8 +60,6 @@ def _write_summary(path: Path) -> None:
                 }
             )
 
-    # KSWIN reproduces the article NA convention: only false alarms and no
-    # valid detections for each drift type.
     for drift_type in ("abrupt", "gradual", "incremental"):
         for distribution in distributions:
             rows.append(
@@ -75,13 +73,12 @@ def _write_summary(path: Path) -> None:
                     "FP": 1000,
                     "FN": 0,
                     "FDR": 1.0,
-                    "MDR": 0.0,
+                    "MDR": np.nan,
                     "IR": 0.0,
-                    "mean_delay": 0.0,
+                    "mean_delay": np.nan,
                 }
             )
 
-    # Pooled rows must be ignored by article reporting.
     rows.append(
         {
             "configuration": "MCDD-S",
@@ -130,7 +127,9 @@ def test_overall_table_averages_the_three_drift_tables(tmp_path: Path) -> None:
     assert np.isclose(mcdd["Mean Delay"], 300.0)
 
 
-def test_kswin_article_na_convention_is_preserved(tmp_path: Path) -> None:
+def test_undefined_metrics_are_preserved_in_article_reporting(
+    tmp_path: Path,
+) -> None:
     summary_file = tmp_path / "summary_results.csv"
     _write_summary(summary_file)
 
@@ -140,7 +139,7 @@ def test_kswin_article_na_convention_is_preserved(tmp_path: Path) -> None:
 
     assert np.isclose(kswin["FDR"], 1.0)
     assert pd.isna(kswin["MDR"])
-    assert pd.isna(kswin["IR"])
+    assert np.isclose(kswin["IR"], 0.0)
     assert pd.isna(kswin["Mean Delay"])
 
     formatted = format_article_table(abrupt, decimals=4)
@@ -149,8 +148,30 @@ def test_kswin_article_na_convention_is_preserved(tmp_path: Path) -> None:
     ].iloc[0]
     assert formatted_kswin["FDR"] == "1.0000"
     assert formatted_kswin["MDR"] == "NA"
-    assert formatted_kswin["IR"] == "NA"
+    assert formatted_kswin["IR"] == "0.0000"
     assert formatted_kswin["Mean Delay"] == "NA"
+
+
+def test_nan_in_one_distribution_is_not_silently_ignored(
+    tmp_path: Path,
+) -> None:
+    summary_file = tmp_path / "summary_results.csv"
+    _write_summary(summary_file)
+    results = pd.read_csv(summary_file)
+
+    mask = (
+        (results["configuration"] == "MCDD-S")
+        & (results["drift_type"] == "abrupt")
+        & (results["distribution"] == "gamma")
+    )
+    results.loc[mask, "MDR"] = np.nan
+    results.to_csv(summary_file, index=False)
+
+    by_drift = average_metrics_by_drift(summary_file, article_na=True)
+    abrupt = article_table_for_drift(by_drift, "abrupt")
+    mcdd = abrupt.loc[abrupt["Config"] == "MCDD-S"].iloc[0]
+
+    assert pd.isna(mcdd["MDR"])
 
 
 def test_partial_abrupt_results_can_be_reported(tmp_path: Path) -> None:
@@ -183,8 +204,6 @@ def test_partial_abrupt_results_can_be_reported(tmp_path: Path) -> None:
         tables["overall"]["Config"] == "MCDD-S"
     ].iloc[0]
 
-    # With only abrupt available, the provisional overall value is identical
-    # to the abrupt value rather than raising an error.
     assert np.isclose(overall_mcdd["FDR"], abrupt_mcdd["FDR"])
     assert np.isclose(overall_mcdd["MDR"], abrupt_mcdd["MDR"])
     assert np.isclose(overall_mcdd["IR"], abrupt_mcdd["IR"])
