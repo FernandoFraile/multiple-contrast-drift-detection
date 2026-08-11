@@ -72,16 +72,7 @@ def generate_stream(
         Standard deviation of the additive Gaussian noise.
     transition_sizes:
         Candidate transition lengths for gradual and incremental drift.
-
-    Notes
-    -----
-    ``numpy.random.RandomState`` is deliberately used to preserve the random
-    number generator employed in the original experiments. The only functional
-    correction relative to the original notebook is that gradual and
-    incremental transition windows are now generated from the selected
-    distribution instead of always using a normal distribution.
     """
-
     _validate_inputs(
         drift_type=drift_type,
         distribution=distribution,
@@ -106,7 +97,6 @@ def generate_stream(
         )
         values = np.concatenate((before_values, after_values))
         drift_end = drift_point
-
     else:
         transition_size = int(rng.choice(np.asarray(transition_sizes)))
         if drift_point + transition_size > n_samples:
@@ -141,9 +131,7 @@ def generate_stream(
                 rng=rng,
             )
 
-        values = np.concatenate(
-            (before_values, transition_values, after_values)
-        )
+        values = np.concatenate((before_values, transition_values, after_values))
         drift_end = drift_point + transition_size
 
     values = _add_noise(
@@ -168,9 +156,6 @@ def _draw_parameters(
     distribution: Distribution,
     rng: np.random.RandomState,
 ) -> tuple[tuple[str, ...], tuple[float, ...], tuple[float, ...]]:
-    # The four draws and their order match the original notebook. The first and
-    # third values are unused by the exponential distribution, but retaining the
-    # draws preserves the subsequent random sequence for a given seed.
     before_first = float(rng.uniform(0.0, 5.0))
     before_scale = float(rng.uniform(0.5, 1.5))
     after_first = float(rng.uniform(0.0, 5.0))
@@ -235,9 +220,7 @@ def _generate_gradual_transition(
         use_new_concept = bool(
             rng.choice((False, True), p=(1.0 - probability, probability))
         )
-        parameters = (
-            after_parameters if use_new_concept else before_parameters
-        )
+        parameters = after_parameters if use_new_concept else before_parameters
         values[index] = _sample_distribution(
             distribution, parameters, 1, rng
         )[0]
@@ -331,9 +314,7 @@ def _validate_inputs(
     if not 0 < drift_point < n_samples:
         raise ValueError("drift_point must lie inside the stream.")
     if noise_standard_deviation < 0:
-        raise ValueError(
-            "noise_standard_deviation must be non-negative."
-        )
+        raise ValueError("noise_standard_deviation must be non-negative.")
     if not transition_sizes or any(size <= 0 for size in transition_sizes):
         raise ValueError(
             "transition_sizes must contain positive integer values."
