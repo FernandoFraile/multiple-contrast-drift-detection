@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Run the MCDD benchmark experiment from the command line.
 
-The runner supports both the complete 90,000-run benchmark and partial
-executions filtered by drift type, distribution, or detector configuration.
-Partial executions can be appended safely to the same master result file or
-used to replace only a selected experiment block.
+By default, the runner evaluates the normal-distribution benchmark. Exponential
+and gamma streams can be selected explicitly with ``--distribution``. Runs can
+also be filtered by drift type or detector configuration, appended safely to the
+same master result file, or used to replace only a selected experiment block.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ DEFAULT_DATA_DIRECTORY = REPOSITORY_ROOT / "data" / "datasets"
 DEFAULT_RESULTS_DIRECTORY = REPOSITORY_ROOT / "results"
 DRIFT_TYPES = ("abrupt", "gradual", "incremental")
 DISTRIBUTIONS = ("normal", "exponential", "gamma")
+DEFAULT_DISTRIBUTIONS = ("normal",)
 RESULT_KEY_COLUMNS = (
     "configuration",
     "drift_type",
@@ -92,7 +93,7 @@ def parse_arguments() -> argparse.Namespace:
         default=None,
         help=(
             "Run only the selected distribution. Repeat the option to select "
-            "multiple distributions. Omit it to use all distributions."
+            "multiple distributions. Omit it to use the normal distribution."
         ),
     )
     parser.add_argument(
@@ -381,7 +382,10 @@ def main() -> int:
     summary_file = results_directory / "summary_results.csv"
 
     drift_types = _selected_values(arguments.drift, DRIFT_TYPES)
-    distributions = _selected_values(arguments.distribution, DISTRIBUTIONS)
+    distributions = _selected_values(
+        arguments.distribution,
+        DEFAULT_DISTRIBUTIONS,
+    )
     configurations = _selected_configurations(arguments.configuration)
 
     streams_per_archive = (
