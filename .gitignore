@@ -3,11 +3,6 @@ data/datasets/*.h5
 data/test/
 *.h5.part
 
-# Generated experiment results (not versioned yet)
-results/**/*.csv
-results/**/*.part
-results/*.csv
-
 # Python caches and test artifacts
 __pycache__/
 *.py[cod]

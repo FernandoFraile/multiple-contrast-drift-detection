@@ -6,14 +6,13 @@ The repository includes:
 
 - generators for abrupt, gradual, and incremental concept drift;
 - normal, exponential, and gamma data streams;
-- reproducible HDF5 generation for the complete 9,000-stream benchmark;
+- reproducible HDF5 generation for the complete 90,000-stream benchmark;
 - the `MCDD` detector implementation;
 - Traditional Single Hypothesis, KSWIN, and LORD-LD baselines;
 - command-line and notebook workflows for complete and focused experiments;
 - article-style result aggregation and LaTeX output;
 - automated software tests.
 
-SEED is not included in the current experiment implementation.
 
 ## Repository structure
 
